@@ -602,6 +602,8 @@ file(File) ->
 %% The name specified with `module_name' can be prefixed and suffixed with
 %% the `module_name_prefix' and `module_name_suffix' options.
 %%
+%% Note that the module name will have any dots replaced by underscores.
+%%
 %% <a id="option-translate_type"/>
 %% The `translate_type' option can be used to provide packer and unpacker
 %% functions for message fields of a certain type.
@@ -1238,8 +1240,7 @@ do_proto_defs_aux1(Mod, Defs, DefsNoRenamings, Sources, Renamings, Opts) ->
     AnRes = gpb_analyzer:analyze_defs(Defs1, Sources, Renamings, Opts),
     case verify_opts(Defs1, Opts) of
         ok ->
-            Res1 = do_proto_defs_aux2(Defs1, DefsNoRenamings,
-                                      clean_module_name(Mod), AnRes, Opts),
+            Res1 = do_proto_defs_aux2(Defs1, DefsNoRenamings, Mod, AnRes, Opts),
             return_or_report_warnings_or_errors(Res1, Warns, Opts,
                                                 get_output_format(Opts));
         {error, OptError} ->
@@ -1551,10 +1552,6 @@ get_nif_cc_outdir(Opts) ->
 
 get_outdir(Opts) ->
     proplists:get_value(o, Opts, ".").
-
-clean_module_name(Mod) ->
-    Clean = re:replace(atom_to_list(Mod), "[.]", "_", [global, {return,list}]),
-    list_to_atom(Clean).
 
 %% @doc List inputs and file outputs, based on an input file.  The
 %% elements `erl_output', `hrl_output' and `nif_cc_output' are present

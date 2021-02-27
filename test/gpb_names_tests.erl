@@ -608,6 +608,13 @@ can_prefix_and_suffix_module_name_test() ->
                                         {module_name_prefix, 'a_'},
                                         {module_name_suffix, '_b'}]).
 
+rename_module_converts_dots_to_underscore_test() ->
+    a_b = gpb_names:rename_module(x, [{module_name, 'a.b'}]),
+    %% dot-to-underscore operates after prefixing or suffixing
+    a_y_z_b = gpb_names:rename_module(x, [{module_name, 'y.z'},
+                                          {module_name_prefix, 'a.'},
+                                          {module_name_suffix, '.b'}]).
+
 %% test helpers
 filter_namey_things(Defs) ->
     lists:filter(
