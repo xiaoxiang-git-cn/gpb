@@ -595,6 +595,19 @@ original_names_test() ->
                              'toppkg.subpkg.EE_a', Rs3),
     ok.
 
+%% module names
+renames_module_test() ->
+    x = gpb_names:rename_module(x, []),
+    a = gpb_names:rename_module(x, [{module_name, a}]).
+
+can_prefix_and_suffix_module_name_test() ->
+    a_x = gpb_names:rename_module(x, [{module_name_prefix, 'a_'}]),
+    x_b = gpb_names:rename_module(x, [{module_name_suffix, '_b'}]),
+    %% Check that suffix/prefix happens after module_name optoin.
+    a_z_b = gpb_names:rename_module(x, [{module_name, 'z'},
+                                        {module_name_prefix, 'a_'},
+                                        {module_name_suffix, '_b'}]).
+
 %% test helpers
 filter_namey_things(Defs) ->
     lists:filter(

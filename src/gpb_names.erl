@@ -77,11 +77,13 @@ file_name_to_module_name(ProtoFileName, Opts) ->
 rename_module(Mod, Opts) when is_atom(Mod) ->
     rename_module(atom_to_list(Mod), Opts);
 rename_module(Mod, Opts) when is_list(Mod) ->
-    list_to_atom(possibly_suffix_mod(
-                   possibly_prefix_mod(
-                     mod_name_from_opts_or_else_filename(Mod, Opts),
-                     Opts),
-                   Opts)).
+    ensure_atom(possibly_suffix_mod(
+                  possibly_prefix_mod(
+                        mod_name_from_opts_or_else_filename(
+                          Mod,
+                          Opts),
+                    Opts),
+                  Opts)).
 
 mod_name_from_opts_or_else_filename(FileBaseName, Opts) ->
     proplists:get_value(module_name, Opts, FileBaseName).
@@ -714,3 +716,6 @@ rename_rpcs(RF, ServiceName, RPCs) ->
 do_rename_type(Name, Key, Renamings) ->
     TypeRenamings = proplists:get_value(Key, Renamings),
     dict:fetch(Name, TypeRenamings).
+
+ensure_atom(S) when is_list(S) -> list_to_atom(S);
+ensure_atom(A) when is_atom(A) -> A.
