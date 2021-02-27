@@ -22,8 +22,10 @@
 
 -module(gpb_names).
 
--export([file_name_to_module_name/2]).
--export([rename_module/2]).
+-export([file_name_to_module_name/2, file_name_to_module_name/3]).
+-export([try_file_name_to_module_name/3]).
+-export([safe_approx_file_name_to_module_name/3]).
+-export([rename_module/2, rename_module/3]).
 -export([rename_defs/2]).
 -export([compute_renamings/2]).
 -export([apply_renamings/2]).
@@ -60,28 +62,59 @@
                      inverse_groups |
                      invert_enums.
 
+-type defs()                         :: gpb_defs:defs().
+-type maybe_non_postprocessed_defs() :: defs() | [term()].
+
+-type opts() :: gpb_compile:opts().
+
 -define(f(Fmt, Args), io_lib:format(Fmt, Args)).
+
+%% @equiv file_name_to_module_name(ProtoFileName, [], Opts)
+-spec file_name_to_module_name(string(), opts()) -> atom().
+file_name_to_module_name(ProtoFileName, Opts) ->
+    file_name_to_module_name(ProtoFileName, [], Opts).
 
 %% @doc Given a file name of a proto file, turn it into a module name,
 %% possibly with name transformations, such as prefix or suffix
 %% according to options.
--spec file_name_to_module_name(string(), gpb_compile:opts()) -> atom().
-file_name_to_module_name(ProtoFileName, Opts) ->
+-spec file_name_to_module_name(string(), defs(), opts()) ->
+          atom().
+file_name_to_module_name(ProtoFileName, Defs, Opts) ->
     Ext = filename:extension(ProtoFileName),
     BaseNameNoExt = filename:basename(ProtoFileName, Ext),
-    rename_module(BaseNameNoExt, Opts).
+    rename_module(BaseNameNoExt, Defs, Opts).
+
+try_file_name_to_module_name(ProtoFileName, Defs, Opts) ->
+    try {ok, file_name_to_module_name(ProtoFileName, Defs, Opts)}
+    catch error:{error, Reason} -> {error, Reason}
+    end.
+
+-spec safe_approx_file_name_to_module_name(string(),
+                                           maybe_non_postprocessed_defs(),
+                                           opts()) -> atom().
+safe_approx_file_name_to_module_name(ProtoFileName, Defs, Opts) ->
+    Ext = filename:extension(ProtoFileName),
+    BaseNameNoExt = filename:basename(ProtoFileName, Ext),
+    Opts1 = ['$ignore-errors' | Opts],
+    rename_module(BaseNameNoExt, Defs, Opts1).
+
+%% @equiv rename_module(Mod, [], Opts)
+-spec rename_module(atom() | string(), opts()) -> atom().
+rename_module(Mod, Opts) ->
+    rename_module(Mod, [], Opts).
 
 %% @doc Given a module name, rename it according to opts, for example
 %% by prefixing it.
--spec rename_module(atom() | string(), gpb_compile:opts()) -> atom().
-rename_module(Mod, Opts) when is_atom(Mod) ->
-    rename_module(atom_to_list(Mod), Opts);
-rename_module(Mod, Opts) when is_list(Mod) ->
+-spec rename_module(atom() | string(),
+                    maybe_non_postprocessed_defs(), opts()) -> atom().
+rename_module(Mod, Defs, Opts) when is_atom(Mod) ->
+    rename_module(atom_to_list(Mod), Defs, Opts);
+rename_module(Mod, Defs, Opts) when is_list(Mod) ->
     list_to_atom(
       dots_to_underscores(
         possibly_suffix_mod(
           possibly_prefix_mod(
-            mod_name_from_opts_or_else_filename(Mod, Opts),
+            mod_name_from_opts_or_else_filename(Mod, Defs, Opts),
             Opts),
           Opts))).
 
@@ -91,8 +124,42 @@ dots_to_underscores(Mod) ->
              end,
     re:replace(ModStr, "[.]", "_", [global, {return,list}]).
 
-mod_name_from_opts_or_else_filename(FileBaseName, Opts) ->
-    proplists:get_value(module_name, Opts, FileBaseName).
+mod_name_from_opts_or_else_filename(FileBaseName, Defs, Opts) ->
+    Mod1 = proplists:get_value(module_name, Opts, FileBaseName),
+    case proplists:get_bool(module_name_from_package, Opts) of
+        true ->
+            case find_module_package(Defs) of
+                {found, Package} ->
+                    %% if called from post-processed defs, package is an atom,
+                    %% but from list_io, defs may be non-post-processed.
+                    if is_atom(Package) -> Package;
+                       is_list(Package) -> lists:concat(Package)
+                    end;
+                not_found ->
+                    case proplists:get_bool('$ignore-errors', Opts) of
+                        true ->
+                            Mod1;
+                        false ->
+                            error({error,
+                                   {{option, module_name_from_package},
+                                    no_pkg_in_defs_for_first_file}})
+                    end
+            end;
+        false ->
+            Mod1
+    end.
+
+%% Search for the package name to use for the module, but
+%% only in the first file chunk, by stopping at the second
+%% {file, _} item seen, if such items are present.
+find_module_package(Defs) ->
+    find_mod_pkg_aux(Defs, _NumFileItemsSeen = 0).
+
+find_mod_pkg_aux([{package, Pkg} | _], _) -> {found, Pkg};
+find_mod_pkg_aux([{file, _} | Rest], 0)   -> find_mod_pkg_aux(Rest, 1);
+find_mod_pkg_aux([{file, _} | _], 1)      -> not_found;
+find_mod_pkg_aux([_ | Rest], N)           -> find_mod_pkg_aux(Rest, N);
+find_mod_pkg_aux([], _)                   -> not_found.
 
 possibly_prefix_mod(BaseNameNoExt, Opts) ->
     case proplists:get_value(module_name_prefix, Opts) of
@@ -115,8 +182,8 @@ possibly_suffix_mod(BaseNameNoExt, Opts) ->
 %%
 %% This effectively invokes {@link apply_renamings/2} with the
 %% result from {@link compute_renamings/2}.
--spec rename_defs(gpb_defs:defs(), gpb_compile:opts()) ->
-                         {ok, gpb_defs:defs()} |
+-spec rename_defs(defs(), opts()) ->
+                         {ok, defs()} |
                          {error, Reason::term()}.
 rename_defs(Defs, Opts) ->
     case compute_renamings(Defs, Opts) of
@@ -127,7 +194,7 @@ rename_defs(Defs, Opts) ->
     end.
 
 %% @doc Compute any renamings to be applied.
--spec compute_renamings(gpb_defs:defs(), gpb_compile:opts()) ->
+-spec compute_renamings(defs(), opts()) ->
                                {ok, renamings()} |
                                {error, Reason::term()}.
 compute_renamings(Defs, Opts) ->
@@ -146,7 +213,7 @@ compute_renamings(Defs, Opts) ->
 
 %% @doc Apply any renamings.
 -spec apply_renamings(Defs, renamings()) -> Defs when
-      Defs :: gpb_defs:defs().
+      Defs :: defs().
 apply_renamings(Defs, no_renamings) ->
     Defs;
 apply_renamings(Defs, Renamings) ->
@@ -213,6 +280,9 @@ fmt_err({duplicates, Dups}) ->
            end
            || K <- Ks]
           || {Ks, V} <- Dups]))];
+fmt_err({{option, module_name_from_package}, no_pkg_in_defs_for_first_file}) ->
+    "The option 'module_name_from_package' was specified, but the " ++
+        "definitions (for the top file) contained no package declaration";
 fmt_err(X) ->
     ?f("Unexpected error ~p", [X]).
 

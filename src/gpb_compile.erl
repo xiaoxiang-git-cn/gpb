@@ -155,6 +155,7 @@
                {module_name_prefix, string() | atom()} |
                {module_name_suffix, string() | atom()} |
                {module_name, string() | atom()} |
+               boolean_opt(module_name_from_package) |
                {translate_type, {gpb_field_type(), [translation()]}} |
                {translate_field, {field_path(), [translation()]}} |
                {any_translate, [translation()]} |
@@ -604,6 +605,13 @@ file(File) ->
 %%
 %% Note that the module name will have any dots replaced by underscores.
 %%
+%% <a id="option-module_name_from_package"/>
+%% The `module_name_from_package' means that the module name is to be
+%% fetched from package declaration in the proto file. It is considered an
+%% if the proto does not contain such a declaration. Only the top proto
+%% file is considered; package declarations in imported files are not
+%% used. Any dots will be replaced by underscores.
+%%
 %% <a id="option-translate_type"/>
 %% The `translate_type' option can be used to provide packer and unpacker
 %% functions for message fields of a certain type.
@@ -1022,12 +1030,20 @@ do_generate_from_file_or_string(In, Opts) ->
             case gpb_names:compute_renamings(Defs, Opts) of
                 {ok, Renamings} ->
                     Defs1 = gpb_names:apply_renamings(Defs, Renamings),
-                    Mod = find_out_mod(In, Opts),
                     DefaultOutDir = find_default_out_dir(In),
                     Opts1 = Opts ++ [{o,DefaultOutDir}],
                     Opts2 = possibly_adjust_proto_defs_version_opt(Opts1),
-                    do_proto_defs_aux1(Mod, Defs1, Defs, Sources, Renamings,
-                                       Opts2);
+                    case try_find_out_mod(In, Defs, Opts) of
+                        {ok, Mod} ->
+                            do_proto_defs_aux1(Mod, Defs1, Defs, Sources,
+                                               Renamings, Opts2);
+                        {error, Reason} = Error ->
+                            possibly_report_error(Error, Opts),
+                            case proplists:get_bool(return_warnings, Opts) of
+                                true  -> {error, Reason, []};
+                                false -> Error
+                            end
+                    end;
                 {error, Reason} = Error ->
                     possibly_report_error(Error, Opts),
                     case proplists:get_bool(return_warnings, Opts) of
@@ -1156,10 +1172,20 @@ is_option_defined(Key, Opts) ->
               end,
               Opts).
 
-find_out_mod({Mod, _S}, _Opts) ->
+try_find_out_mod({Mod, _S}, _Defs, _Opts) ->
+    {ok, Mod};
+try_find_out_mod(File, Defs, Opts) ->
+    case gpb_names:try_file_name_to_module_name(File, Defs, Opts) of
+        {ok, Mod} ->
+            {ok, Mod};
+        {error, Reason} ->
+            {error, {rename_mod, Reason}}
+    end.
+
+safe_find_out_mod({Mod, _S}, _Defs, _Opts) ->
     Mod;
-find_out_mod(File, Opts) ->
-    gpb_names:file_name_to_module_name(File, Opts).
+safe_find_out_mod(File, Defs, Opts) ->
+    gpb_names:safe_approx_file_name_to_module_name(File, Defs, Opts).
 
 find_default_out_dir({_Mod, _S}) -> ".";
 find_default_out_dir(File) -> filename:dirname(File).
@@ -1592,8 +1618,8 @@ string_list_io(Mod, Str, Opts) ->
     list_deps({Mod, Str}, Opts1).
 
 list_deps(In, Opts) ->
-    {Sources, Missing} = collect_inputs(In, Opts),
-    Mod = find_out_mod(In, Opts),
+    {Sources, Missing, Defs} = collect_inputs(In, Opts),
+    Mod = safe_find_out_mod(In, Defs, Opts),
     DefaultOutDir = find_default_out_dir(In),
     Opts1 = Opts ++ [{o,DefaultOutDir}],
     OutputFiles =
@@ -1737,6 +1763,8 @@ fmt_err({epb_compatibility_impossible, {with_msg_named, msg}}) ->
 fmt_err(maps_flat_oneof_not_supported_for_target_version) ->
     "Flat oneof for maps is only supported on Erlang 18 and later";
 fmt_err({rename_defs, Reason}) ->
+    gpb_names:format_error(Reason);
+fmt_err({rename_mod, Reason}) ->
     gpb_names:format_error(Reason);
 fmt_err({cvt_proto_defs_version_to_latest_error, Reason}) ->
     ?f("Failed to convert supplied proto definitions version "
@@ -2907,30 +2935,36 @@ collect_inputs(Input, Opts) ->
     Opts1 = add_curr_dir_as_include_if_needed(Opts),
     Opts2 = ensure_include_path_to_wellknown_types(Opts1),
     ImEnv = new_import_env(Opts2),
-    {{ImportPaths, Missing}, _} =
+    {{ImportPaths, Missing, AllDefs}, _} =
         process_each_input_once(
-          fun({ok_read, {Content, Path}}, {AccImports, AccMissing}) ->
+          fun({ok_read, {Content, Path}}, {AccImports, AccMissing, AccDefs}) ->
                   case parse_one_input(Path, Content, ImEnv) of
-                      {ok, {_Defs, MoreImports}} ->
-                          Acc1 = {[Path | AccImports], AccMissing},
+                      {ok, {Defs, MoreImports}} ->
+                          Acc1 = {[Path | AccImports],
+                                  AccMissing,
+                                  [Defs | AccDefs]},
                           {MoreImports, Acc1};
                       {error, _Reason} ->
-                          Acc1 = {[Path | AccImports], AccMissing},
+                          Acc1 = {[Path | AccImports], AccMissing, AccDefs},
                           {[], Acc1}
                   end;
-             ({error, {locate, Import, _Reason}}, {AccImports, AccMissing}) ->
-                  Acc1 = {AccImports, [Import | AccMissing]},
+             ({error, {locate, Import, _Reason}},
+              {AccImports, AccMissing, AccDefs}) ->
+                  Acc1 = {AccImports, [Import | AccMissing], AccDefs},
                   {[], Acc1};
-             ({error, {read, Path, _Reason}}, {AccImports, AccMissing}) ->
+             ({error, {read, Path, _Reason}},
+              {AccImports, AccMissing, AccDefs}) ->
                   FileName = path_to_filename(Path, orig),
-                  Acc1 = {AccImports, [FileName | AccMissing]},
+                  Acc1 = {AccImports, [FileName | AccMissing], AccDefs},
                   {[], Acc1}
           end,
-          {[], []},
+          {[], [], []},
           queue:from_list([Input]),
           ImEnv),
     Imports = [Orig || #path{orig=Orig} <- ImportPaths],
-    {lists:reverse(Imports), lists:reverse(Missing)}.
+    {lists:reverse(Imports),
+     lists:reverse(Missing),
+     lists:append(lists:reverse(AllDefs))}.
 
 %% Like lists:foldl, but over a queue, but process each only once
 %%

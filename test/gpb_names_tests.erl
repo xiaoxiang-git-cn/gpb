@@ -613,7 +613,38 @@ rename_module_converts_dots_to_underscore_test() ->
     %% dot-to-underscore operates after prefixing or suffixing
     a_y_z_b = gpb_names:rename_module(x, [{module_name, 'y.z'},
                                           {module_name_prefix, 'a.'},
-                                          {module_name_suffix, '.b'}]).
+                                          {module_name_suffix, '.b'}]),
+    %% dot-to-underscore happens after package name option:
+    Defs = [{package, 'a.a.a'}],
+    a_a_a = gpb_names:rename_module(x, Defs, [module_name_from_package]).
+
+module_name_from_package_test() ->
+    Defs1 = [{package, a}],
+    a = gpb_names:rename_module(x, Defs1, [module_name_from_package]),
+    %% No package present -> error
+    ?assertError(_, gpb_names:rename_module(x, [module_name_from_package])),
+    ?assertError(_, gpb_names:rename_module(x, [], [module_name_from_package])),
+    %% Not renamed if no option, even if packages are present:
+    x = gpb_names:rename_module(x, Defs1, []),
+
+    %% If there are imports, the package for the first file should be used
+    Defs2 = [{file, {"a", "a.proto"}},
+             {package, aa},
+             {file, {"b", "b.proto"}},
+             {package, bb}],
+    aa = gpb_names:rename_module(x, Defs2, [module_name_from_package]),
+    %% If the first file has no package, then it is an error
+    Defs3 = Defs2 -- [{package, aa}],
+    ?assertError(_, gpb_names:rename_module(x, Defs3,
+                                            [module_name_from_package])),
+
+    %% Check that it can format an error message:
+    {error, Reason} = gpb_names:try_file_name_to_module_name(
+                        "a/b/x.proto", Defs3,
+                        [module_name_from_package]),
+    ?assert(is_list(gpb_names:format_error({error, Reason}))),
+    ?assert(is_list(gpb_names:format_error(Reason))),
+    ok.
 
 %% test helpers
 filter_namey_things(Defs) ->

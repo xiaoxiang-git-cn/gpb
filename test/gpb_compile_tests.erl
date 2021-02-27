@@ -1174,6 +1174,54 @@ module_name_with_suffix_prefix_test() ->
     end,
     ok.
 
+module_name_from_package_test() ->
+    Proto1 = <<"package a.b.c;\n",
+               "message msg1 { required uint32 f1=1; }\n">>,
+    Master = self(),
+    ReadInput1 = fun(FName) -> Master ! {read, FName}, {ok, Proto1} end,
+    ReportOutput = fun(FName, Contents) ->
+                           Ext = list_to_atom(tl(filename:extension(FName))),
+                           Master ! {write, {Ext, FName, Contents}},
+                           ok
+                   end,
+    FileOpOpt1 = mk_fileop_opt([{read_file, ReadInput1},
+                                {write_file, ReportOutput}]),
+    ok = gpb_compile:file("m.proto",
+                          [FileOpOpt1, {i,"."},
+                           module_name_from_package]),
+    receive
+        {read, "m.proto"} -> ok;
+        {read, X} -> erlang:error({"reading from odd file", X})
+    end,
+    receive
+        {write, {hrl, "a_b_c.hrl", _Hrl}} ->
+            ok;
+        {write, {hrl, X2, C2}} ->
+            erlang:error({"writing odd hrl file!", X2, C2})
+    end,
+    receive
+        {write, {erl, "a_b_c.erl", Erl}} ->
+            assert_contains_regexp(Erl, "-include.*\"a_b_c.hrl\""),
+            assert_contains_regexp(Erl, "-module.*a_b_c"),
+            ok;
+        {write, {erl, X3, C3}} ->
+            erlang:error({"writing odd erl file!", X3, C3})
+    end,
+
+    %% Check that format error works: when no package declaration
+    Proto2 = <<"message msg1 { required uint32 f1=1; }\n">>,
+    ReadInput2 = fun(FName) -> Master ! {read, FName}, {ok, Proto2} end,
+    FileOpOpt2 = mk_fileop_opt([{read_file, ReadInput2},
+                                {write_file, ReportOutput}]),
+    {error, Reason} = Error2 =
+        gpb_compile:file("m.proto",
+                         [FileOpOpt2, {i,"."},
+                          module_name_from_package]),
+    Txt2 = gpb_compile:format_error(Error2),
+    Txt2 = gpb_compile:format_error(Reason),
+    assert_contains_regexp(Txt2, "no package declaration"),
+    ok.
+
 type_name_prefix_test() ->
     Proto = ["enum EE { a=0; b=1; };\n"
              "message M {\n"
@@ -2309,6 +2357,19 @@ list_io_with_renaming_options_test() ->
      {hrl_output, "/something_else.hrl"},
      {sources, ["/main.proto"]} | _] =
         do_list_io_defs(FileSystem, [{module_name, "something_else"}]),
+    FileSys2 = [{"/main.proto", ["package a.b.c;",
+                                 "message M { optional uint32 f = 1; }"]}],
+    %% Module name from package
+    [{erl_output, "/a_b_c.erl"},
+     {hrl_output, "/a_b_c.hrl"},
+     {sources, ["/main.proto"]} | _] =
+        do_list_io_defs(FileSys2, [module_name_from_package]),
+    %% There is something even if there is an error (no package)
+    [{erl_output, "/main.erl"},
+     {hrl_output, "/main.hrl"},
+     {sources, ["/main.proto"]} | _] =
+        do_list_io_defs(FileSystem, % <-- no package in this
+                        [module_name_from_package]),
     ok.
 
 list_io_with_outdir_options_test() ->
