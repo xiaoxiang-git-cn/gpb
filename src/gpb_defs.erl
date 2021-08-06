@@ -539,8 +539,12 @@ resolve_extend_refs({eref2, Ctxt, _Name, ExtendeeCandidates}, Fields, Defs,
             {hd(ExtendeeCandidates), Fields, [Reason | Acc]}
     end.
 
+filterRef([_,'.',Type]) -> [Type];
+filterRef(Other) -> Other.
+
 %% -> {found, {msg,FullName}|{enum,FullName}} | not_found
-resolve_ref(Defs, Ref, Root, FullName) ->
+resolve_ref(Defs, Ref0, Root, FullName) ->
+    Ref = filterRef(Ref0),
     case is_absolute_ref(Ref) of
         true  ->
             FullRef = ensure_path_prepended(Root, Ref),
